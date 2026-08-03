@@ -13,8 +13,8 @@ CACHE_FILE = os.path.expanduser("~/.paas_joint_cache.json")
 
 # Define authorized joint members and their individual PINs
 USERS = {
-    "Alex": {"pin": "0782", "role": "Primary Member"},
-    "Jordan": {"pin": "0782", "role": "Partner Member"}
+    "Taki Yeasir": {"pin": "0782", "role": "Primary Member"},
+    "Mahir Mannan": {"pin": "9031", "role": "Partner Member"}
 }
 
 CATEGORIES = ["Food", "Bills & Utilities", "Entertainment", "Shopping", "Transport", "Other"]
@@ -31,8 +31,8 @@ def get_default_structure():
     return {
         "expenses": [],
         "wishlist": [
-            {"id": "init-1", "item": "Camping Tent", "price": 120.0, "added_by": "Alex", "date": str(datetime.date.today())},
-            {"id": "init-2", "item": "Portable Charger", "price": 45.0, "added_by": "Jordan", "date": str(datetime.date.today())}
+            {"id": "init-1", "item": "Camping Tent", "price": 120.0, "added_by": "Taki Yeasir", "date": str(datetime.date.today())},
+            {"id": "init-2", "item": "Portable Charger", "price": 45.0, "added_by": "Mahir Mannan", "date": str(datetime.date.today())}
         ],
         "extra_income": [],
         "activity_log": []
