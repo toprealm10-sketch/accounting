@@ -7,12 +7,12 @@ import pandas as pd
 import streamlit as st
 
 # ==================== CONFIGURATION & USERS ====================
+# NOTE: Store your real JSONBin API key in your environment variables or Streamlit secrets!
 BIN_ID = os.getenv("JSONBIN_ID", "6a70bea2da38895dfeb46969")
-API_KEY = os.getenv("JSONBIN_API_KEY", "$2a$10$fJV5FBu.w7Frp.1rcAwPOOo77Na3X0uoRiHihmwMJEUU866aB6KSm")
+API_KEY = os.getenv("JSONBIN_API_KEY", "")
 BASE_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
 CACHE_FILE = os.path.expanduser("~/.paas_joint_cache.json")
 
-# Authorized joint members and their PINs
 USERS = {
     "Taki Yasir": {"pin": "0782", "role": "Primary Member", "avatar": "👑"},
     "Mahir Mannan": {"pin": "9031", "role": "Partner Member", "avatar": "⚡"}
@@ -89,11 +89,14 @@ def deduplicate_list(items):
     return unique_items
 
 def sync_data():
+    local_data = read_local_cache()
+    if not API_KEY:
+        return local_data
+
     headers = {
         "Content-Type": "application/json",
         "X-Master-Key": API_KEY
     }
-    local_data = read_local_cache()
     
     try:
         response = requests.get(f"{BASE_URL}/latest", headers=headers, timeout=4)
@@ -119,6 +122,16 @@ def sync_data():
         return local_data
     except Exception:
         return local_data
+
+def save_and_sync(data):
+    """Helper to ensure local cache and cloud storage stay unified."""
+    write_local_cache(data)
+    if API_KEY:
+        try:
+            headers = {"Content-Type": "application/json", "X-Master-Key": API_KEY}
+            requests.put(BASE_URL, json=data, headers=headers, timeout=4)
+        except Exception:
+            pass
 
 def log_activity(data, action_text, user):
     entry = {
@@ -286,8 +299,7 @@ with tab_dash:
             if st.button("Update Goal"):
                 data["savings_goal"] = {"name": new_goal_name, "target": float(new_goal_target)}
                 log_activity(data, f"Updated savings goal to '{new_goal_name}' (৳{new_goal_target:,.2f})", active_user)
-                write_local_cache(data)
-                sync_data()
+                save_and_sync(data)
                 st.rerun()
 
 # ==================== TAB 2: LOG TRANSACTIONS ====================
@@ -313,8 +325,7 @@ with tab_add:
                         "added_by": active_user
                     })
                     log_activity(data, f"Logged expense '{exp_item}' (৳{exp_amount:,.2f}) under {exp_cat}", active_user)
-                    write_local_cache(data)
-                    sync_data()
+                    save_and_sync(data)
                     st.success(f"Expense recorded by {active_user}!")
                     st.rerun()
                 else:
@@ -337,14 +348,13 @@ with tab_add:
                         "added_by": active_user
                     })
                     log_activity(data, f"Added ৳{inc_amount:,.2f} extra income from '{inc_source}'", active_user)
-                    write_local_cache(data)
-                    sync_data()
+                    save_and_sync(data)
                     st.success(f"Income recorded by {active_user}!")
                     st.rerun()
                 else:
                     st.error("Please enter a valid source and amount.")
 
-# ==================== TAB 3: WISHLIST & TARGETS ====================
+# ==================== TAB 3: WISHLIST & TARGETS (FIXED) ====================
 with tab_wishlist:
     st.subheader("Shared Wishlist & Affordability Forecast")
     
@@ -362,8 +372,7 @@ with tab_wishlist:
                         "date": str(datetime.date.today())
                     })
                     log_activity(data, f"Added '{w_item}' (৳{w_price:,.2f}) to joint wishlist", active_user)
-                    write_local_cache(data)
-                    sync_data()
+                    save_and_sync(data)
                     st.success(f"'{w_item}' added!")
                     st.rerun()
                 else:
@@ -372,7 +381,9 @@ with tab_wishlist:
     if not data["wishlist"]:
         st.info("The shared wishlist is currently empty.")
     else:
-        for idx, entry in enumerate(data["wishlist"]):
+        # Avoid index-shifting bugs by iterating over a snapshot of the list
+        current_wishlist = list(data["wishlist"])
+        for idx, entry in enumerate(current_wishlist):
             price = entry["price"]
             afford_date, days_needed = find_afford_date(data, price)
             author = entry.get("added_by", "Joint")
@@ -392,31 +403,33 @@ with tab_wishlist:
                 c_price.write(f"৳{price:,.2f}")
                 c_status.markdown(f":{color}[{status}]")
                 
-                # Buy Button
+                # Buy Button (Safe ID-based lookup and removal)
                 if c_buy.button("🛍️ Buy Now", key=f"buy_{item_id}"):
-                    selected = data["wishlist"].pop(idx)
-                    data["expenses"].append({
-                        "id": str(uuid.uuid4())[:8],
-                        "date": str(datetime.date.today()),
-                        "item": selected["item"],
-                        "amount": selected["price"],
-                        "category": "Shopping",
-                        "added_by": active_user
-                    })
-                    log_activity(data, f"Purchased wishlist item '{selected['item']}' for ৳{selected['price']:,.2f}", active_user)
-                    write_local_cache(data)
-                    sync_data()
-                    st.success(f"Purchased '{selected['item']}'! Moved to shared expenses.")
-                    st.rerun()
+                    target_item = next((item for item in data["wishlist"] if item.get("id") == item_id), None)
+                    if target_item:
+                        data["wishlist"] = [i for i in data["wishlist"] if i.get("id") != item_id]
+                        data["expenses"].append({
+                            "id": str(uuid.uuid4())[:8],
+                            "date": str(datetime.date.today()),
+                            "item": target_item["item"],
+                            "amount": target_item["price"],
+                            "category": "Shopping",
+                            "added_by": active_user
+                        })
+                        log_activity(data, f"Purchased wishlist item '{target_item['item']}' for ৳{target_item['price']:,.2f}", active_user)
+                        save_and_sync(data)
+                        st.success(f"Purchased '{target_item['item']}'! Moved to shared expenses.")
+                        st.rerun()
                 
-                # Remove Item Button
+                # Remove/Trash Button (Safe ID-based filter removal)
                 if c_remove.button("🗑️", key=f"remove_{item_id}", help="Remove from Wishlist"):
-                    removed = data["wishlist"].pop(idx)
-                    log_activity(data, f"Removed '{removed['item']}' from joint wishlist", active_user)
-                    write_local_cache(data)
-                    sync_data()
-                    st.success(f"Removed '{removed['item']}' from Wishlist.")
-                    st.rerun()
+                    target_item = next((item for item in data["wishlist"] if item.get("id") == item_id), None)
+                    if target_item:
+                        data["wishlist"] = [i for i in data["wishlist"] if i.get("id") != item_id]
+                        log_activity(data, f"Removed '{target_item['item']}' from joint wishlist", active_user)
+                        save_and_sync(data)
+                        st.success(f"Removed '{target_item['item']}' from Wishlist.")
+                        st.rerun()
                     
                 st.divider()
 
