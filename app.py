@@ -12,7 +12,7 @@ API_KEY = os.getenv("JSONBIN_API_KEY", "$2a$10$fJV5FBu.w7Frp.1rcAwPOOo77Na3X0uoR
 BASE_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
 CACHE_FILE = os.path.expanduser("~/.paas_joint_cache.json")
 
-# Define authorized joint members and their individual PINs
+# Authorized joint members and their PINs
 USERS = {
     "Taki Yasir": {"pin": "0782", "role": "Primary Member", "avatar": "👑"},
     "Mahir Mannan": {"pin": "9031", "role": "Partner Member", "avatar": "⚡"}
@@ -30,7 +30,6 @@ st.set_page_config(
 # ==================== CUSTOM UI STYLING ====================
 st.markdown("""
 <style>
-    /* Metric Card Polish */
     div[data-testid="stMetric"] {
         background: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -38,12 +37,10 @@ st.markdown("""
         border-radius: 12px;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
     }
-    /* Tab Styling */
     button[data-baseweb="tab"] {
         font-weight: 600;
         font-size: 1rem;
     }
-    /* Divider spacing */
     hr {
         margin: 1.5em 0;
         opacity: 0.2;
@@ -215,7 +212,7 @@ current_balance, sched_earn, extra_earn, total_spent = get_current_balance(data)
 
 # --- TOP KPI METRIC CARDS ---
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Available Balance", f"৳{current_balance:,.2f}", delta=f"Net Pool")
+c1.metric("Available Balance", f"৳{current_balance:,.2f}", delta="Net Pool")
 c2.metric("Scheduled Earnings", f"৳{sched_earn:,.2f}", delta="6th to Today")
 c3.metric("Shared Extra Income", f"৳{extra_earn:,.2f}", delta="Contributions")
 c4.metric("Total Expenses", f"৳{total_spent:,.2f}", delta="- Outflow", delta_color="inverse")
@@ -252,7 +249,6 @@ with tab_dash:
                 cat = entry.get("category", "Other")
                 cat_totals[cat] = cat_totals.get(cat, 0.0) + entry.get("amount", 0.0)
             
-            # Remove zero values
             chart_data = {k: v for k, v in cat_totals.items() if v > 0}
             if chart_data:
                 st.bar_chart(chart_data)
@@ -273,7 +269,6 @@ with tab_dash:
             
     st.divider()
     
-    # Savings Goal Section
     st.markdown("#### 🎯 Shared Savings Goal Tracker")
     goal = data.get("savings_goal", {"name": "Emergency Fund", "target": 50000.0})
     target_amt = goal["target"]
@@ -391,13 +386,14 @@ with tab_wishlist:
                 status, color = f"📅 Affordable on {afford_date} (in {days_needed} days)", "blue"
                 
             with st.container():
-                c_item, c_author, c_price, c_status, c_btn = st.columns([3, 2, 2, 3, 2])
+                c_item, c_author, c_price, c_status, c_buy, c_remove = st.columns([3, 2, 2, 3, 1.5, 1])
                 c_item.write(f"**{idx+1}. {entry['item']}**")
                 c_author.write(f"👤 **{author}**")
                 c_price.write(f"৳{price:,.2f}")
                 c_status.markdown(f":{color}[{status}]")
                 
-                if c_btn.button("🛍️ Buy Now", key=f"buy_{item_id}"):
+                # Buy Button
+                if c_buy.button("🛍️ Buy Now", key=f"buy_{item_id}"):
                     selected = data["wishlist"].pop(idx)
                     data["expenses"].append({
                         "id": str(uuid.uuid4())[:8],
@@ -412,6 +408,16 @@ with tab_wishlist:
                     sync_data()
                     st.success(f"Purchased '{selected['item']}'! Moved to shared expenses.")
                     st.rerun()
+                
+                # Remove Item Button
+                if c_remove.button("🗑️", key=f"remove_{item_id}", help="Remove from Wishlist"):
+                    removed = data["wishlist"].pop(idx)
+                    log_activity(data, f"Removed '{removed['item']}' from joint wishlist", active_user)
+                    write_local_cache(data)
+                    sync_data()
+                    st.success(f"Removed '{removed['item']}' from Wishlist.")
+                    st.rerun()
+                    
                 st.divider()
 
 # ==================== TAB 4: RECEIPT HISTORY ====================
@@ -421,7 +427,6 @@ with tab_history:
     if not data["expenses"]:
         st.info("No expenses recorded yet.")
     else:
-        # Filters
         f_col1, f_col2 = st.columns(2)
         with f_col1:
             selected_cat = st.multiselect("Filter by Category", CATEGORIES, default=CATEGORIES)
@@ -438,13 +443,11 @@ with tab_history:
             st.warning("No expenses match your selected filters.")
         else:
             df = pd.DataFrame(filtered_expenses)
-            # Reorder columns cleanly if available
             cols_order = [col for col in ["date", "item", "amount", "category", "added_by"] if col in df.columns]
             df_display = df[cols_order].sort_values(by="date", ascending=False)
             
             st.dataframe(df_display, use_container_width=True, hide_index=True)
             
-            # Download CSV option
             csv = df_display.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Download Log as CSV",
