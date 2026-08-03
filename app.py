@@ -139,7 +139,7 @@ def deduplicate_list(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def sync_data() -> dict[str, Any]:
     """
-    Fetches authoritative cloud data from JSONBin.
+    Fetches authoritative cloud data from JSONBin without resurrecting deleted items.
     Falls back to local cache if network errors occur or API key is missing.
     """
     local_data = read_local_cache()
@@ -157,7 +157,7 @@ def sync_data() -> dict[str, Any]:
             if not isinstance(cloud_data, dict):
                 return local_data
 
-            # Guarantee required schema keys exist
+            # Guarantee required schema keys exist and deduplicate lists
             for key in ["expenses", "wishlist", "extra_income", "activity_log"]:
                 cloud_data.setdefault(key, [])
                 cloud_data[key] = deduplicate_list(cloud_data[key])
@@ -358,8 +358,11 @@ with tab_dashboard:
     st.subheader("Expense History")
     expenses = data.get("expenses", [])
     if expenses:
-        df_expenses = pd.DataFrame(expenses)
-        df_expenses = df_expenses[["date", "title", "category", "amount", "added_by"]]
+        # Using reindex guarantees columns exist even if JSONBin contains legacy data
+        df_expenses = pd.DataFrame(expenses).reindex(
+            columns=["date", "title", "category", "amount", "added_by"],
+            fill_value="-"
+        )
         st.dataframe(df_expenses, use_container_width=True, hide_index=True)
     else:
         st.info("No expenses recorded yet.")
@@ -406,7 +409,7 @@ with tab_wishlist:
         for idx, item in enumerate(wishlist_items):
             with st.container():
                 wc1, wc2, wc3 = st.columns([3, 1, 1])
-                wc1.write(f"**{item.get('item')}** (Added by {item.get('added_by')})")
+                wc1.write(f"**{item.get('item')}** (Added by {item.get('added_by', '-')})")
                 wc2.write(f"**৳{float(item.get('price', 0)):,.2f}**")
                 if wc3.button("Remove", key=f"del_wish_{item.get('id', idx)}"):
                     if not current_user:
@@ -459,7 +462,10 @@ with tab_income:
 
     extra_income_list = data.get("extra_income", [])
     if extra_income_list:
-        df_income = pd.DataFrame(extra_income_list)[["date", "source", "amount", "added_by"]]
+        df_income = pd.DataFrame(extra_income_list).reindex(
+            columns=["date", "source", "amount", "added_by"],
+            fill_value="-"
+        )
         st.dataframe(df_income, use_container_width=True, hide_index=True)
     else:
         st.info("No extra income records found.")
@@ -470,7 +476,10 @@ with tab_activity:
     st.subheader("Recent Activity & Audit Trail")
     logs = data.get("activity_log", [])
     if logs:
-        df_logs = pd.DataFrame(logs)[["timestamp", "user", "action"]]
+        df_logs = pd.DataFrame(logs).reindex(
+            columns=["timestamp", "user", "action"],
+            fill_value="-"
+        )
         st.dataframe(df_logs, use_container_width=True, hide_index=True)
     else:
         st.info("No activity recorded yet.")
