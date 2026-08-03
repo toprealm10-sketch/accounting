@@ -130,7 +130,6 @@ def deduplicate_list(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = set()
     unique_items = []
     for item in items:
-        # Use ID if available, otherwise hash sorted key-value pairs
         sig = item.get("id") or tuple(sorted((k, str(v)) for k, v in item.items()))
         if sig not in seen:
             seen.add(sig)
@@ -140,7 +139,7 @@ def deduplicate_list(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def sync_data() -> dict[str, Any]:
     """
-    Fetches authoritative cloud data from JSONBin without resurrecting deleted items.
+    Fetches authoritative cloud data from JSONBin.
     Falls back to local cache if network errors occur or API key is missing.
     """
     local_data = read_local_cache()
@@ -161,6 +160,7 @@ def sync_data() -> dict[str, Any]:
             # Guarantee required schema keys exist
             for key in ["expenses", "wishlist", "extra_income", "activity_log"]:
                 cloud_data.setdefault(key, [])
+                cloud_data[key] = deduplicate_list(cloud_data[key])
             cloud_data.setdefault(
                 "savings_goal", {"name": "Emergency Fund", "target": 50000.0}
             )
@@ -219,7 +219,6 @@ def calculate_earnings_until(
     try:
         start_date = datetime.date(today.year, today.month, start_day)
     except ValueError:
-        # Handles invalid day numbers gracefully by capping to month end
         start_date = datetime.date(today.year, today.month, 1)
 
     if target_date < start_date:
@@ -246,12 +245,232 @@ def get_current_balance(data: dict[str, Any]) -> float:
     scheduled_earned = float(calculate_earnings_until(today))
     
     extra_earned = sum(
-        float(item.get("amount") or 0.0)
+        float(item.get("amount", 0.0))
         for item in data.get("extra_income", [])
     )
     spent_total = sum(
-        float(item.get("amount") or 0.0)
+        float(item.get("amount", 0.0))
         for item in data.get("expenses", [])
     )
     
     return (scheduled_earned + extra_earned) - spent_total
+
+
+# ==================== STATE INITIALIZATION ====================
+if "paas_data" not in st.session_state:
+    st.session_state.paas_data = sync_data()
+
+if "authenticated_user" not in st.session_state:
+    st.session_state.authenticated_user = None
+
+data = st.session_state.paas_data
+
+
+# ==================== SIDEBAR AUTHENTICATION & CONTROLS ====================
+with st.sidebar:
+    st.title("🏠 PAAS Controls")
+    
+    st.subheader("Account Login")
+    selected_user = st.selectbox("Select Member", list(USERS.keys()))
+    pin_input = st.text_input("Enter PIN", type="password", max_chars=4)
+    
+    if st.button("Authenticate", use_container_width=True):
+        if pin_input == USERS[selected_user]["pin"]:
+            st.session_state.authenticated_user = selected_user
+            st.success(f"Logged in as {selected_user}")
+        else:
+            st.error("Invalid PIN")
+
+    current_user = st.session_state.authenticated_user
+    if current_user:
+        user_info = USERS[current_user]
+        st.info(f"**Active:** {user_info['avatar']} {current_user} ({user_info['role']})")
+        if st.button("Log Out", use_container_width=True):
+            st.session_state.authenticated_user = None
+            st.rerun()
+    else:
+        st.warning("Please log in to add or modify records.")
+
+    st.divider()
+    if st.button("🔄 Force Cloud Sync", use_container_width=True):
+        st.session_state.paas_data = sync_data()
+        st.success("Synced with cloud!")
+        st.rerun()
+
+
+# ==================== MAIN APPLICATION UI ====================
+st.title("PAAS — Joint Accounting System")
+st.caption("Manage shared expenses, track savings goals, and monitor joint cash flow.")
+
+# Metric Scorecard
+total_balance = get_current_balance(data)
+total_spent = sum(float(item.get("amount", 0.0)) for item in data.get("expenses", []))
+total_extra_income = sum(float(item.get("amount", 0.0)) for item in data.get("extra_income", []))
+savings_target = float(data.get("savings_goal", {}).get("target", 50000.0))
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Available Balance", f"৳{total_balance:,.2f}")
+col2.metric("Total Spent", f"৳{total_spent:,.2f}")
+col3.metric("Extra Income", f"৳{total_extra_income:,.2f}")
+col4.metric("Savings Target", f"৳{savings_target:,.2f}")
+
+st.divider()
+
+# Navigation Tabs
+tab_dashboard, tab_wishlist, tab_income, tab_activity = st.tabs([
+    "📊 Dashboard & Expenses",
+    "🎁 Wishlist & Savings",
+    "💵 Income & Earnings",
+    "📜 Activity Log",
+])
+
+
+# -------------------- TAB 1: DASHBOARD & EXPENSES --------------------
+with tab_dashboard:
+    st.subheader("Log New Expense")
+    with st.form("expense_form", clear_on_submit=True):
+        exp_col1, exp_col2, exp_col3 = st.columns([2, 1, 1])
+        title = exp_col1.text_input("Expense Title", placeholder="e.g., Grocery run")
+        amount = exp_col2.number_input("Amount (৳)", min_value=0.0, step=10.0)
+        category = exp_col3.selectbox("Category", CATEGORIES)
+        
+        submitted = st.form_submit_button("Add Expense", use_container_width=True)
+        if submitted:
+            if not current_user:
+                st.error("You must log in from the sidebar to record expenses.")
+            elif not title or amount <= 0:
+                st.warning("Please enter a valid title and amount.")
+            else:
+                new_expense = {
+                    "id": uuid.uuid4().hex[:8],
+                    "title": title,
+                    "amount": float(amount),
+                    "category": category,
+                    "added_by": current_user,
+                    "date": str(datetime.date.today()),
+                }
+                data.setdefault("expenses", []).append(new_expense)
+                log_activity(data, f"Added expense '{title}' (৳{amount:.2f})", current_user)
+                save_and_sync(data)
+                st.success("Expense logged successfully!")
+                st.rerun()
+
+    st.subheader("Expense History")
+    expenses = data.get("expenses", [])
+    if expenses:
+        df_expenses = pd.DataFrame(expenses)
+        df_expenses = df_expenses[["date", "title", "category", "amount", "added_by"]]
+        st.dataframe(df_expenses, use_container_width=True, hide_index=True)
+    else:
+        st.info("No expenses recorded yet.")
+
+
+# -------------------- TAB 2: WISHLIST & SAVINGS --------------------
+with tab_wishlist:
+    st.subheader("Savings Goal Progress")
+    goal_name = data.get("savings_goal", {}).get("name", "Emergency Fund")
+    progress = max(0.0, min(1.0, total_balance / savings_target)) if savings_target > 0 else 0.0
+    st.write(f"**{goal_name}** — Progress towards **৳{savings_target:,.2f}**")
+    st.progress(progress)
+
+    st.divider()
+    st.subheader("Joint Wishlist")
+    
+    with st.form("wishlist_form", clear_on_submit=True):
+        w_col1, w_col2 = st.columns([3, 1])
+        item_name = w_col1.text_input("New Item Name", placeholder="e.g., New Router")
+        item_price = w_col2.number_input("Estimated Price (৳)", min_value=0.0, step=50.0)
+        
+        w_submit = st.form_submit_button("Add to Wishlist", use_container_width=True)
+        if w_submit:
+            if not current_user:
+                st.error("Please log in to add items to the wishlist.")
+            elif not item_name or item_price <= 0:
+                st.warning("Please enter a valid item name and price.")
+            else:
+                new_item = {
+                    "id": uuid.uuid4().hex[:8],
+                    "item": item_name,
+                    "price": float(item_price),
+                    "added_by": current_user,
+                    "date": str(datetime.date.today()),
+                }
+                data.setdefault("wishlist", []).append(new_item)
+                log_activity(data, f"Added wishlist item '{item_name}' (৳{item_price:.2f})", current_user)
+                save_and_sync(data)
+                st.success("Wishlist updated!")
+                st.rerun()
+
+    wishlist_items = data.get("wishlist", [])
+    if wishlist_items:
+        for idx, item in enumerate(wishlist_items):
+            with st.container():
+                wc1, wc2, wc3 = st.columns([3, 1, 1])
+                wc1.write(f"**{item.get('item')}** (Added by {item.get('added_by')})")
+                wc2.write(f"**৳{float(item.get('price', 0)):,.2f}**")
+                if wc3.button("Remove", key=f"del_wish_{item.get('id', idx)}"):
+                    if not current_user:
+                        st.error("Login required.")
+                    else:
+                        removed = data["wishlist"].pop(idx)
+                        log_activity(data, f"Removed wishlist item '{removed.get('item')}'", current_user)
+                        save_and_sync(data)
+                        st.rerun()
+    else:
+        st.info("Your wishlist is currently empty.")
+
+
+# -------------------- TAB 3: INCOME & EARNINGS --------------------
+with tab_income:
+    st.subheader("Scheduled Earnings Calculator")
+    today_date = datetime.date.today()
+    scheduled_total = calculate_earnings_until(today_date)
+    st.write(
+        f"Estimated regular earnings accrued from the start of the cycle to today ({today_date.strftime('%B %d, %Y')}): "
+        f"**৳{scheduled_total:,.2f}**"
+    )
+
+    st.divider()
+    st.subheader("Log Additional Income")
+    with st.form("income_form", clear_on_submit=True):
+        inc_col1, inc_col2 = st.columns([3, 1])
+        source = inc_col1.text_input("Income Source", placeholder="e.g., Freelance Project")
+        inc_amount = inc_col2.number_input("Amount (৳)", min_value=0.0, step=100.0)
+        
+        inc_submit = st.form_submit_button("Record Income", use_container_width=True)
+        if inc_submit:
+            if not current_user:
+                st.error("You must log in to record additional income.")
+            elif not source or inc_amount <= 0:
+                st.warning("Please provide a valid source and amount.")
+            else:
+                new_income = {
+                    "id": uuid.uuid4().hex[:8],
+                    "source": source,
+                    "amount": float(inc_amount),
+                    "added_by": current_user,
+                    "date": str(datetime.date.today()),
+                }
+                data.setdefault("extra_income", []).append(new_income)
+                log_activity(data, f"Recorded income from '{source}' (৳{inc_amount:.2f})", current_user)
+                save_and_sync(data)
+                st.success("Income recorded!")
+                st.rerun()
+
+    extra_income_list = data.get("extra_income", [])
+    if extra_income_list:
+        df_income = pd.DataFrame(extra_income_list)[["date", "source", "amount", "added_by"]]
+        st.dataframe(df_income, use_container_width=True, hide_index=True)
+    else:
+        st.info("No extra income records found.")
+
+
+# -------------------- TAB 4: ACTIVITY LOG --------------------
+with tab_activity:
+    st.subheader("Recent Activity & Audit Trail")
+    logs = data.get("activity_log", [])
+    if logs:
+        df_logs = pd.DataFrame(logs)[["timestamp", "user", "action"]]
+        st.dataframe(df_logs, use_container_width=True, hide_index=True)
+    else:
+        st.info("No activity recorded yet.")
