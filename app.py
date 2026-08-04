@@ -138,8 +138,7 @@ def deduplicate_list(items: list[dict[str, Any]], category_type: str = "wishlist
         if not entry.get("id"):
             sig_hash = hashlib.md5(get_item_signature(entry, category_type).encode()).hexdigest()[:8]
             entry["id"] = f"id_{sig_hash}"
-        
-        # Ensure default required keys exist on every record to prevent KeyErrors
+
         if category_type == "expenses":
             entry.setdefault("category", "Other")
             entry.setdefault("title", entry.get("item", "Untitled"))
@@ -318,8 +317,8 @@ def get_all_balances(data: dict[str, Any], target_date: datetime.date = None) ->
         elif "Mahir" in user:
             mahir_extra += amt
         else:
-            taki_extra += amt / 2
-            mahir_extra += amt / 2
+            taki_extra += amt / 2.0
+            mahir_extra += amt / 2.0
 
     taki_spent = 0.0
     mahir_spent = 0.0
@@ -331,8 +330,8 @@ def get_all_balances(data: dict[str, Any], target_date: datetime.date = None) ->
         elif "Mahir" in user:
             mahir_spent += amt
         else:
-            taki_spent += amt / 2
-            mahir_spent += amt / 2
+            taki_spent += amt / 2.0
+            mahir_spent += amt / 2.0
 
     taki_balance = (taki_earned + taki_extra) - taki_spent
     mahir_balance = (mahir_earned + mahir_extra) - mahir_spent
@@ -441,13 +440,12 @@ with tab_dashboard:
                 st.success("Expense logged successfully!")
                 st.rerun()
 
-    # Visual Spending Chart (Guarded against missing 'category' key)
+    # Visual Spending Chart (Guarded against missing columns)
     expenses = data.get("expenses", [])
     if expenses:
         st.divider()
         st.subheader("Spending by Category")
-        
-        # Explicitly ensure all required DataFrame columns exist
+
         df_exp = pd.DataFrame(expenses)
         for col, def_val in [
             ("category", "Other"),
@@ -477,9 +475,9 @@ with tab_dashboard:
                     "Category",
                     CATEGORIES,
                     index=CATEGORIES.index(entry["category"]) if entry.get("category") in CATEGORIES else len(CATEGORIES) - 1,
-                    key=f"cat_{idx}"
+                    key=f"cat_{idx}",
                 )
-                
+
                 bc1, bc2 = st.columns(2)
                 if bc1.button("Save Changes", key=f"save_{idx}", use_container_width=True):
                     if not current_user:
@@ -551,7 +549,7 @@ with tab_wishlist:
                 wc1, wc2, wc3, wc4 = st.columns([3, 1, 1, 1])
                 wc1.write(f"**{item.get('item')}** (Added by {item.get('added_by', '-')})")
                 wc2.write(f"**৳{float(item.get('price', 0)):,.2f}**")
-                
+
                 if wc3.button("🛍️ Buy Now", key=f"buy_wish_{item.get('id', idx)}", use_container_width=True):
                     if not current_user:
                         st.error("Login required.")
@@ -566,7 +564,11 @@ with tab_wishlist:
                             "date": str(datetime.date.today()),
                         }
                         data.setdefault("expenses", []).append(new_exp)
-                        log_activity(data, f"Purchased wishlist item '{bought['item']}' (৳{bought['price']:.2f})", current_user)
+                        log_activity(
+                            data,
+                            f"Purchased wishlist item '{bought['item']}' (৳{bought['price']:.2f})",
+                            current_user,
+                        )
                         save_and_sync(data)
                         st.success(f"Purchased '{bought['item']}'! Logged under Shopping expenses.")
                         st.rerun()
@@ -586,4 +588,69 @@ with tab_wishlist:
 with tab_income:
     st.subheader("Scheduled Earnings & Daily Rules")
     today_date = datetime.date.today()
-    taki_e, mah
+    earned_taki, earned_mahir = calculate_individual_earnings_until(today_date)
+    st.write(
+        f"**Taki Yasir** (Fri: 1,500 | Sat: 0 | Sun–Thu: 500): **৳{earned_taki:,.2f}** accrued this cycle."
+    )
+    st.write(
+        f"**Mahir Mannan** (100 every single day): **৳{earned_mahir:,.2f}** accrued this cycle."
+    )
+
+    st.divider()
+    st.subheader("🔮 Future Balance Projection")
+    days_to_project = st.slider("Project balance days into the future:", min_value=1, max_value=90, value=15)
+    future_date = today_date + datetime.timedelta(days=days_to_project)
+    future_balances = get_all_balances(data, target_date=future_date)
+
+    fc1, fc2, fc3 = st.columns(3)
+    fc1.metric(f"Projected Joint ({future_date})", f"৳{future_balances['Joint']:,.2f}")
+    fc2.metric(f"Projected Taki ({future_date})", f"৳{future_balances['Taki']:,.2f}")
+    fc3.metric(f"Projected Mahir ({future_date})", f"৳{future_balances['Mahir']:,.2f}")
+
+    st.divider()
+    st.subheader("Log Additional Income")
+    with st.form("income_form", clear_on_submit=True):
+        inc_col1, inc_col2 = st.columns([3, 1])
+        source = inc_col1.text_input("Income Source", placeholder="e.g., Freelance Project")
+        inc_amount = inc_col2.number_input("Amount (৳)", min_value=0.0, step=100.0)
+
+        inc_submit = st.form_submit_button("Record Income", use_container_width=True)
+        if inc_submit:
+            if not current_user:
+                st.error("You must log in to record additional income.")
+            elif not source or inc_amount <= 0:
+                st.warning("Please provide a valid source and amount.")
+            else:
+                new_income = {
+                    "id": uuid.uuid4().hex[:8],
+                    "source": source,
+                    "amount": float(inc_amount),
+                    "added_by": current_user,
+                    "date": str(datetime.date.today()),
+                }
+                data.setdefault("extra_income", []).append(new_income)
+                log_activity(data, f"Recorded income from '{source}' (৳{inc_amount:.2f})", current_user)
+                save_and_sync(data)
+                st.success("Income recorded!")
+                st.rerun()
+
+    extra_income_list = data.get("extra_income", [])
+    if extra_income_list:
+        df_income = pd.DataFrame(extra_income_list).reindex(
+            columns=["date", "source", "amount", "added_by"], fill_value="-"
+        )
+        st.dataframe(df_income, use_container_width=True, hide_index=True)
+    else:
+        st.info("No extra income records found.")
+
+# -------------------- TAB 4: ACTIVITY LOG --------------------
+with tab_activity:
+    st.subheader("Recent Activity & Audit Trail")
+    logs = data.get("activity_log", [])
+    if logs:
+        df_logs = pd.DataFrame(logs).reindex(
+            columns=["timestamp", "user", "action"], fill_value="-"
+        )
+        st.dataframe(df_logs, use_container_width=True, hide_index=True)
+    else:
+        st.info("No activity recorded yet.")
